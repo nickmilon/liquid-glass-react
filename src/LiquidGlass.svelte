@@ -1,168 +1,277 @@
 <script lang="ts">
   // Svelte 5 Runes are auto-imported or global
-  import { displacementMap, polarDisplacementMap } from "./utils";
+  import LiquidGlassInternal from './LiquidGlassInternal.svelte';
+  // utils.ts is used by LiquidGlassInternal, not directly here.
 
-  // Props
-  export let id: string;
-  export let className: string = "";
-  export let containerStyle: Record<string, string | number> = {};
-  export let displacementScale: number = 25;
-  export let aberrationIntensity: number = 2;
-  export let mode: "standard" | "polar" = "standard";
-  export let blurAmount: number = 12;
-  export let saturation: number = 180;
-  export let active: boolean = false;
-  export let overLight: boolean = false;
-  export let cornerRadius: number = 999;
-  export let padding: string = "24px 32px";
-  export let glassSize: { width: number; height: number } = { width: 270, height: 69 };
-  export let onClick: (() => void) | null = null;
-  export let element: HTMLDivElement | null = null; // For bind:this
+  // --- Props ---
+  export let displacementScale: number = 70;
+  export let blurAmount: number = 0.0625; // This will be passed to LiquidGlassInternal
+  export let saturation: number = 140; // This will be passed to LiquidGlassInternal
+  export let aberrationIntensity: number = 2; // This will be passed to LiquidGlassInternal
+  export let elasticity: number = 0.15;
+  export let cornerRadius: number = 999; // This will be passed to LiquidGlassInternal
 
-  // Event callback props
-  export let onGlassMouseEnter: (() => void) | undefined = undefined;
-  export let onGlassMouseLeave: (() => void) | undefined = undefined;
-  export let onGlassMouseDown: (() => void) | undefined = undefined;
-  export let onGlassMouseUp: (() => void) | undefined = undefined;
+  export let globalMousePosExternal: { x: number; y: number } | null = null;
+  export let mouseOffsetExternal: { x: number; y: number } | null = null;
+  export let mouseContainer: HTMLElement | null = null; // Optional external element for mouse tracking
 
-  // Internal State
-  let isFirefox = $state(false);
+  export let className: string = ""; // Passed to LiquidGlassInternal's className for its root
+  export let padding: string = "24px 32px"; // Passed to LiquidGlassInternal
+  export let overLight: boolean = false; // Passed to LiquidGlassInternal & used for decorative elements
+  export let style: Record<string, string | number> = {}; // Base style for LiquidGlassInternal
+  export let mode: "standard" | "polar" = "standard"; // Passed to LiquidGlassInternal
+  export let onClick: (() => void) | null = null; // Passed to LiquidGlassInternal
 
-  // Lifecycle Effect
-  $effect(() => {
-    // Ensure this runs only in the browser
-    if (typeof window !== 'undefined' && typeof navigator !== 'undefined') {
-      isFirefox = navigator.userAgent.toLowerCase().includes("firefox");
+  // Unique ID for the filter, can be overridden by prop if needed
+  export let filterId: string = "lg-filter-" + Math.random().toString(36).substr(2, 9);
+
+  // --- State ($state) ---
+  let internalElementRef = $state<HTMLDivElement | null>(null); // Ref to LiquidGlassInternal's root div
+  let isHovered = $state(false);
+  let isActive = $state(false);
+  let currentGlassSize = $state({ width: 270, height: 69 }); // Actual size of LiquidGlassInternal
+  let internalGlobalMousePos = $state({ x: 0, y: 0 });
+  let internalMouseOffset = $state({ x: 0, y: 0 });
+
+  // --- Helper Functions ---
+  function updateCurrentGlassSize() {
+    if (internalElementRef) {
+      const rect = internalElementRef.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        currentGlassSize.width = rect.width;
+        currentGlassSize.height = rect.height;
+      }
+    }
+  }
+
+  function handleMouseMove(e: MouseEvent) {
+    const container = mouseContainer || internalElementRef;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+
+    internalMouseOffset.x = ((e.clientX - centerX) / rect.width) * 100;
+    internalMouseOffset.y = ((e.clientY - centerY) / rect.height) * 100;
+    internalGlobalMousePos.x = e.clientX;
+    internalGlobalMousePos.y = e.clientY;
+  }
+
+  // --- Lifecycle Effects ($effect) ---
+  $effect(() => { // Initial size and resize listener
+    if (typeof window === 'undefined') return;
+    updateCurrentGlassSize();
+    const rafId = requestAnimationFrame(updateCurrentGlassSize); // For initial layout shifts
+    window.addEventListener('resize', updateCurrentGlassSize);
+    return () => {
+      window.removeEventListener('resize', updateCurrentGlassSize);
+      cancelAnimationFrame(rafId);
     }
   });
 
-  // Derived Reactive Calculations
-  const edgeMaskOffset = $derived(Math.max(30, 80 - aberrationIntensity * 2));
-  const feImageHref = $derived(mode === "standard" ? displacementMap : polarDisplacementMap);
-  const feFuncATableValues = $derived(`0 ${aberrationIntensity * 0.05} 1`);
-  const redDisplacedScale = $derived(displacementScale * -1);
-  const greenDisplacedScale = $derived(displacementScale * (-1 - aberrationIntensity * 0.05));
-  const blueDisplacedScale = $derived(displacementScale * (-1 - aberrationIntensity * 0.1));
-  const gaussianBlurStdDeviation = $derived(Math.max(0.1, 0.5 - aberrationIntensity * 0.1));
+  $effect(() => { // Mouse move listener
+    if (typeof window === 'undefined') return;
+    const targetElement = mouseContainer || internalElementRef;
+    const useExternalTracking = globalMousePosExternal !== null || mouseOffsetExternal !== null;
 
-  const svgStyle = $derived(`position: absolute; width: ${glassSize.width}px; height: ${glassSize.height}px;`);
-  const warpFilterStyle = $derived(isFirefox ? '' : `url(#${id})`);
-  const warpBackdropFilterStyle = $derived(`blur(${(overLight ? 12 : 4) + blurAmount * 32}px) saturate(${saturation}%)`);
-  const mainDivClass = $derived(`relative ${className} ${active ? "active" : ""} ${onClick ? "cursor-pointer" : ""}`);
-  const glassDivStyle = $derived(`border-radius: ${cornerRadius}px; position: relative; display: inline-flex; align-items: center; gap: 24px; padding: ${padding}; overflow: hidden; transition: all 0.2s ease-in-out; box-shadow: ${overLight ? "0px 16px 70px rgba(0, 0, 0, 0.75)" : "0px 12px 40px rgba(0, 0, 0, 0.25)"};`);
-  const childrenDivStyle = $derived(`position: relative; z-index: 1; font: 500 20px/1 system-ui; text-shadow: ${overLight ? "0px 2px 12px rgba(0, 0, 0, 0)" : "0px 2px 12px rgba(0, 0, 0, 0.4)"};`);
-  const effectiveContainerStyle = $derived(Object.entries(containerStyle).map(([k, v]) => `${k}:${typeof v === 'number' ? v + 'px' : v}`).join(';'));
+    let actualListenerTarget: HTMLElement | null = null;
+    if (!useExternalTracking && targetElement) {
+      targetElement.addEventListener('mousemove', handleMouseMove);
+      actualListenerTarget = targetElement;
+    }
+    return () => {
+      if (actualListenerTarget) {
+        actualListenerTarget.removeEventListener('mousemove', handleMouseMove);
+      }
+    };
+  });
+
+  $effect(() => { // Update size if element ref changes
+      if(internalElementRef && typeof window !== 'undefined') {
+          updateCurrentGlassSize();
+      }
+  });
+
+
+  // --- Derived State ($derived) ---
+  const globalMousePos = $derived(globalMousePosExternal || internalGlobalMousePos);
+  const mouseOffset = $derived(mouseOffsetExternal || internalMouseOffset);
+
+  // --- Calculation Functions (called within $derived) ---
+  function calculateFadeInFactor(): number {
+    if (!globalMousePos.x || !globalMousePos.y || !internalElementRef) return 0;
+    const rect = internalElementRef.getBoundingClientRect();
+    const pillWidth = currentGlassSize.width;
+    const pillHeight = currentGlassSize.height;
+    const edgeDistanceX = Math.max(0, Math.abs(globalMousePos.x - (rect.left + pillWidth / 2)) - pillWidth / 2);
+    const edgeDistanceY = Math.max(0, Math.abs(globalMousePos.y - (rect.top + pillHeight / 2)) - pillHeight / 2);
+    const edgeDistance = Math.sqrt(edgeDistanceX * edgeDistanceX + edgeDistanceY * edgeDistanceY);
+    const activationZone = 200;
+    return edgeDistance > activationZone ? 0 : 1 - edgeDistance / activationZone;
+  }
+
+  function calculateElasticTranslation(): { x: number; y: number } {
+    if (!internalElementRef) return { x: 0, y: 0 };
+    const fadeInFactor = calculateFadeInFactor();
+    const rect = internalElementRef.getBoundingClientRect();
+    return {
+      x: (globalMousePos.x - (rect.left + currentGlassSize.width / 2)) * elasticity * 0.1 * fadeInFactor,
+      y: (globalMousePos.y - (rect.top + currentGlassSize.height / 2)) * elasticity * 0.1 * fadeInFactor,
+    };
+  }
+
+  function calculateDirectionalScale(): string {
+    if (!globalMousePos.x || !globalMousePos.y || !internalElementRef) return "scale(1)";
+    const rect = internalElementRef.getBoundingClientRect();
+    const pillWidth = currentGlassSize.width;
+    const pillHeight = currentGlassSize.height;
+    const pillCenterX = rect.left + pillWidth / 2;
+    const pillCenterY = rect.top + pillHeight / 2;
+    const deltaX = globalMousePos.x - pillCenterX;
+    const deltaY = globalMousePos.y - pillCenterY;
+    const edgeDistanceX = Math.max(0, Math.abs(deltaX) - pillWidth / 2);
+    const edgeDistanceY = Math.max(0, Math.abs(deltaY) - pillHeight / 2);
+    const edgeDistance = Math.sqrt(edgeDistanceX * edgeDistanceX + edgeDistanceY * edgeDistanceY);
+    const activationZone = 200;
+    if (edgeDistance > activationZone) return "scale(1)";
+    const fadeInFactor = 1 - edgeDistance / activationZone;
+    const centerDistance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+    if (centerDistance === 0) return "scale(1)";
+    const normalizedX = deltaX / centerDistance;
+    const normalizedY = deltaY / centerDistance;
+    const stretchIntensity = Math.min(centerDistance / 300, 1) * elasticity * fadeInFactor;
+    const scaleXVal = 1 + Math.abs(normalizedX) * stretchIntensity * 0.3 - Math.abs(normalizedY) * stretchIntensity * 0.15;
+    const scaleYVal = 1 + Math.abs(normalizedY) * stretchIntensity * 0.3 - Math.abs(normalizedX) * stretchIntensity * 0.15;
+    return `scaleX(${Math.max(0.8, scaleXVal)}) scaleY(${Math.max(0.8, scaleYVal)})`;
+  }
+
+  // --- Derived Styles for LiquidGlassInternal and Decorative Elements ---
+  const elasticTranslation = $derived(calculateElasticTranslation());
+  const directionalScale = $derived(calculateDirectionalScale());
+  const currentTransformStyle = $derived(
+    `translate(calc(-50% + ${elasticTranslation.x}px), calc(-50% + ${elasticTranslation.y}px)) ${isActive && onClick ? "scale(0.96)" : directionalScale}`
+  );
+
+  const internalContainerStyle = $derived({
+    ...style, // User-provided base style object
+    transform: currentTransformStyle,
+    transition: "all ease-out 0.2s",
+    position: style.position || "relative", // Default to relative if not specified
+    top: style.top || "50%",
+    left: style.left || "50%",
+  });
+
+  const decorativePositionStyles = $derived({
+    position: internalContainerStyle.position,
+    top: internalContainerStyle.top,
+    left: internalContainerStyle.left,
+    height: `${currentGlassSize.height}px`,
+    width: `${currentGlassSize.width}px`,
+    borderRadius: `${cornerRadius}px`,
+    transform: currentTransformStyle,
+    transition: internalContainerStyle.transition,
+  });
+
+  const decorativePositionStyleString = $derived(
+    Object.entries(decorativePositionStyles).map(([k, v]) => `${k}:${v}`).join(';') + ';' // Ensure trailing semicolon
+  );
+
+  const borderBg1 = $derived(`linear-gradient(${135 + mouseOffset.x * 1.2}deg, rgba(255,255,255,0) 0%, rgba(255,255,255,${0.12 + Math.abs(mouseOffset.x)*0.008}) ${Math.max(10,33+mouseOffset.y*0.3)}%, rgba(255,255,255,${0.4 + Math.abs(mouseOffset.x)*0.012}) ${Math.min(90,66+mouseOffset.y*0.4)}%, rgba(255,255,255,0) 100%)`);
+  const borderBg2 = $derived(`linear-gradient(${135 + mouseOffset.x * 1.2}deg, rgba(255,255,255,0) 0%, rgba(255,255,255,${0.32 + Math.abs(mouseOffset.x)*0.008}) ${Math.max(10,33+mouseOffset.y*0.3)}%, rgba(255,255,255,${0.6 + Math.abs(mouseOffset.x)*0.012}) ${Math.min(90,66+mouseOffset.y*0.4)}%, rgba(255,255,255,0) 100%)`);
+
+  const hoverOpacity1 = $derived(isHovered || isActive ? 0.5 : 0);
+  const hoverOpacity2 = $derived(isActive ? 0.5 : 0);
+  const hoverOpacity3 = $derived(isHovered ? 0.4 : isActive ? 0.8 : 0);
 
 </script>
 
-<!-- Outermost container div -->
-<div
-  class="{mainDivClass}"
-  style="{effectiveContainerStyle}"
-  on:click={onClick}
-  bind:this={element}
->
-  <!-- SVG Filter (GlassFilter part) -->
-  <svg style="{svgStyle}" aria-hidden="true">
-    <defs>
-      <radialGradient id="{`${id}-edge-mask`}" cx="50%" cy="50%" r="50%">
-        <stop offset="0%" stop-color="black" stop-opacity="0" />
-        <stop offset="{`${edgeMaskOffset}%`}" stop-color="black" stop-opacity="0" />
-        <stop offset="100%" stop-color="white" stop-opacity="1" />
-      </radialGradient>
-      <filter id="{id}" x="-35%" y="-35%" width="170%" height="170%" color-interpolation-filters="sRGB">
-        <feImage id="feimage" x="0" y="0" width="100%" height="100%" result="DISPLACEMENT_MAP" href="{feImageHref}" preserveAspectRatio="xMidYMid slice" />
-        <feColorMatrix
-          in="DISPLACEMENT_MAP"
-          type="matrix"
-          values="0.3 0.3 0.3 0 0
-                 0.3 0.3 0.3 0 0
-                 0.3 0.3 0.3 0 0
-                 0 0 0 1 0"
-          result="EDGE_INTENSITY"
-        />
-        <feComponentTransfer in="EDGE_INTENSITY" result="EDGE_MASK">
-          <feFuncA type="discrete" tableValues="{feFuncATableValues}" />
-        </feComponentTransfer>
-        <feOffset in="SourceGraphic" dx="0" dy="0" result="CENTER_ORIGINAL" />
-        <feDisplacementMap in="SourceGraphic" in2="DISPLACEMENT_MAP" scale="{redDisplacedScale}" xChannelSelector="R" yChannelSelector="B" result="RED_DISPLACED" />
-        <feColorMatrix
-          in="RED_DISPLACED"
-          type="matrix"
-          values="1 0 0 0 0
-                 0 0 0 0 0
-                 0 0 0 0 0
-                 0 0 0 1 0"
-          result="RED_CHANNEL"
-        />
-        <feDisplacementMap in="SourceGraphic" in2="DISPLACEMENT_MAP" scale="{greenDisplacedScale}" xChannelSelector="R" yChannelSelector="B" result="GREEN_DISPLACED" />
-        <feColorMatrix
-          in="GREEN_DISPLACED"
-          type="matrix"
-          values="0 0 0 0 0
-                 0 1 0 0 0
-                 0 0 0 0 0
-                 0 0 0 1 0"
-          result="GREEN_CHANNEL"
-        />
-        <feDisplacementMap in="SourceGraphic" in2="DISPLACEMENT_MAP" scale="{blueDisplacedScale}" xChannelSelector="R" yChannelSelector="B" result="BLUE_DISPLACED" />
-        <feColorMatrix
-          in="BLUE_DISPLACED"
-          type="matrix"
-          values="0 0 0 0 0
-                 0 0 0 0 0
-                 0 0 1 0 0
-                 0 0 0 1 0"
-          result="BLUE_CHANNEL"
-        />
-        <feBlend in="GREEN_CHANNEL" in2="BLUE_CHANNEL" mode="screen" result="GB_COMBINED" />
-        <feBlend in="RED_CHANNEL" in2="GB_COMBINED" mode="screen" result="RGB_COMBINED" />
-        <feGaussianBlur in="RGB_COMBINED" stdDeviation="{gaussianBlurStdDeviation}" result="ABERRATED_BLURRED" />
-        <feComposite in="ABERRATED_BLURRED" in2="EDGE_MASK" operator="in" result="EDGE_ABERRATION" />
-        <feComponentTransfer in="EDGE_MASK" result="INVERTED_MASK">
-          <feFuncA type="table" tableValues="1 0" />
-        </feComponentTransfer>
-        <feComposite in="CENTER_ORIGINAL" in2="INVERTED_MASK" operator="in" result="CENTER_CLEAN" />
-        <feComposite in="EDGE_ABERRATION" in2="CENTER_CLEAN" operator="over" />
-      </filter>
-    </defs>
-  </svg>
-
-  <!-- Inner "glass" div -->
-  <div
-    class="glass"
-    style="{glassDivStyle}"
-    on:mouseenter={() => onGlassMouseEnter?.()}
-    on:mouseleave={() => onGlassMouseLeave?.()}
-    on:mousedown={() => onGlassMouseDown?.()}
-    on:mouseup={() => onGlassMouseUp?.()}
+<!-- Wrapper div to establish positioning context for all elements -->
+<div style="position: relative; display: inline-block; line-height: 0;">
+  <LiquidGlassInternal
+    bind:element={internalElementRef}
+    id={filterId}
+    className={className}
+    containerStyle={internalContainerStyle}
+    displacementScale={overLight ? displacementScale * 0.5 : displacementScale}
+    aberrationIntensity={aberrationIntensity}
+    mode={mode}
+    blurAmount={blurAmount}
+    saturation={saturation}
+    active={isActive}
+    overLight={overLight}
+    cornerRadius={cornerRadius}
+    padding={padding}
+    glassSize={currentGlassSize}
+    onClick={onClick}
+    onInternalMouseEnter={() => isHovered = true}
+    onInternalMouseLeave={() => { isHovered = false; isActive = false; }}
+    onInternalMouseDown={() => { if (onClick) isActive = true; }}
+    onInternalMouseUp={() => { if (onClick) isActive = false; }}
   >
-    <!-- Backdrop layer -->
-    <span
-      class="glass__warp"
-      style="position: absolute; inset: 0; filter: {warpFilterStyle}; backdrop-filter: {warpBackdropFilterStyle};"
-    ></span>
+    <slot></slot> <!-- Pass down the slot -->
+  </LiquidGlassInternal>
 
-    <!-- User content slot -->
+  <!-- Decorative Overlays, positioned relative to the main component via decorativePositionStyles -->
+  {#if overLight}
     <div
-      class="transition-all duration-150 ease-in-out text-white"
-      style="{childrenDivStyle}"
-    >
-      <slot></slot>
-    </div>
-  </div>
+      class="pointer-events-none"
+      style="{decorativePositionStyleString}background-color: black; opacity: {isHovered || isActive ? 0.25 : 0.2}; transition: {decorativePositionStyles.transition}, opacity 0.2s ease-in-out;"
+    ></div>
+    <div
+      class="pointer-events-none"
+      style="{decorativePositionStyleString}mix-blend-mode: overlay; opacity: {isHovered || isActive ? 1.0 : 0.0}; transition: {decorativePositionStyles.transition}, opacity 0.2s ease-in-out;"
+    ></div>
+  {/if}
+
+  <!-- Borders -->
+  <span
+    class="pointer-events-none"
+    style="{decorativePositionStyleString}mix-blend-mode: screen; opacity: 0.2; padding: 1.5px;
+           -webkit-mask-image: linear-gradient(black 0 0) content-box, linear-gradient(black 0 0);
+           -webkit-mask-composite: xor; mask-composite: exclude;
+           box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.5) inset, 0 1px 3px rgba(255, 255, 255, 0.25) inset, 0 1px 4px rgba(0, 0, 0, 0.35);
+           background-image: {borderBg1};"
+  ></span>
+  <span
+    class="pointer-events-none"
+    style="{decorativePositionStyleString}mix-blend-mode: overlay; padding: 1.5px;
+           -webkit-mask-image: linear-gradient(black 0 0) content-box, linear-gradient(black 0 0);
+           -webkit-mask-composite: xor; mask-composite: exclude;
+           box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.5) inset, 0 1px 3px rgba(255, 255, 255, 0.25) inset, 0 1px 4px rgba(0, 0, 0, 0.35);
+           background-image: {borderBg2};"
+  ></span>
+
+  <!-- Hover Effects -->
+  {#if onClick}
+    <div
+      class="pointer-events-none"
+      style="{decorativePositionStyleString}width: {currentGlassSize.width + 1}px;
+             opacity: {hoverOpacity1};
+             background-image: radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 50%);
+             mix-blend-mode: overlay;"
+    ></div>
+    <div
+      class="pointer-events-none"
+      style="{decorativePositionStyleString}width: {currentGlassSize.width + 1}px;
+             opacity: {hoverOpacity2};
+             background-image: radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 1) 0%, rgba(255, 255, 255, 0) 80%);
+             mix-blend-mode: overlay;"
+    ></div>
+    <div
+      class="pointer-events-none"
+      style="{decorativePositionStyleString}width: {currentGlassSize.width + 1}px;
+             opacity: {hoverOpacity3};
+             background-image: radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 1) 0%, rgba(255, 255, 255, 0) 100%);
+             mix-blend-mode: overlay;"
+    ></div>
+  {/if}
+
 </div>
 
 <style>
-  .relative { position: relative; }
-  .cursor-pointer { cursor: pointer; }
-  /* Basic transition utilities - consider if a global CSS/Tailwind is used */
-  .transition-all { transition-property: all; }
-  .duration-150 { transition-duration: 150ms; }
-  .ease-in-out { transition-timing-function: ease-in-out; }
-  .text-white { color: white; }
-
-  /* If 'active' or other classes are globally defined (e.g., by Tailwind),
-     they might work. Otherwise, define them or use :global if needed.
-     For scoped styles, Svelte handles it. */
+  .pointer-events-none {
+    pointer-events: none;
+  }
+  /* The main wrapper div has inline styles. No other component-specific styles needed here. */
 </style>
