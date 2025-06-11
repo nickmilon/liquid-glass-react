@@ -1,59 +1,58 @@
 <script lang="ts">
-  import { onMount, createEventDispatcher } from 'svelte';
+  // Svelte 5 Runes are auto-imported or global
   import { displacementMap, polarDisplacementMap } from "./utils";
 
-  const dispatch = createEventDispatcher();
-
-  // Props for the combined component
-  export let id: string; // Unique ID for the SVG filter, will be passed by parent LiquidGlass
-  export let className: string = ""; // Custom class for the root div
-  export let containerStyle: Record<string, string | number> = {}; // Custom style for the root div
-
-  export let displacementScale: number = 25; // Controls filter's displacement
-  export let aberrationIntensity: number = 2; // Controls filter's aberration
-  export let mode: "standard" | "polar" = "standard"; // Filter mode
-
-  export let blurAmount: number = 12; // For backdrop blur
-  export let saturation: number = 180; // For backdrop saturation
-
-  export let active: boolean = false; // Visual state, will be controlled by parent LiquidGlass
-  export let overLight: boolean = false; // Visual variant, will be controlled by parent LiquidGlass
-
-  export let cornerRadius: number = 999; // Border radius
-  export let padding: string = "24px 32px"; // Padding for the glass content area
-
-  // This prop is crucial: it's the size of the glass effect area itself,
-  // and also the dimensions for the SVG filter.
+  // Props
+  export let id: string;
+  export let className: string = "";
+  export let containerStyle: Record<string, string | number> = {};
+  export let displacementScale: number = 25;
+  export let aberrationIntensity: number = 2;
+  export let mode: "standard" | "polar" = "standard";
+  export let blurAmount: number = 12;
+  export let saturation: number = 180;
+  export let active: boolean = false;
+  export let overLight: boolean = false;
+  export let cornerRadius: number = 999;
+  export let padding: string = "24px 32px";
   export let glassSize: { width: number; height: number } = { width: 270, height: 69 };
-
-  export let onClick: (() => void) | null = null; // Click handler, passed from parent LiquidGlass
-
+  export let onClick: (() => void) | null = null;
   export let element: HTMLDivElement | null = null; // For bind:this
 
-  // Internal State and Lifecycle
-  let isFirefox = false;
-  onMount(() => {
-    isFirefox = navigator.userAgent.toLowerCase().includes("firefox");
+  // Event callback props
+  export let onGlassMouseEnter: (() => void) | undefined = undefined;
+  export let onGlassMouseLeave: (() => void) | undefined = undefined;
+  export let onGlassMouseDown: (() => void) | undefined = undefined;
+  export let onGlassMouseUp: (() => void) | undefined = undefined;
+
+  // Internal State
+  let isFirefox = $state(false);
+
+  // Lifecycle Effect
+  $effect(() => {
+    // Ensure this runs only in the browser
+    if (typeof window !== 'undefined' && typeof navigator !== 'undefined') {
+      isFirefox = navigator.userAgent.toLowerCase().includes("firefox");
+    }
   });
 
-  // Reactive Calculations (Derived from Props)
-  // For SVG Filter
-  $: edgeMaskOffset = Math.max(30, 80 - aberrationIntensity * 2);
-  $: feImageHref = mode === "standard" ? displacementMap : polarDisplacementMap;
-  $: feFuncATableValues = `0 ${aberrationIntensity * 0.05} 1`;
-  $: redDisplacedScale = displacementScale * -1;
-  $: greenDisplacedScale = displacementScale * (-1 - aberrationIntensity * 0.05);
-  $: blueDisplacedScale = displacementScale * (-1 - aberrationIntensity * 0.1);
-  $: gaussianBlurStdDeviation = Math.max(0.1, 0.5 - aberrationIntensity * 0.1);
+  // Derived Reactive Calculations
+  const edgeMaskOffset = $derived(Math.max(30, 80 - aberrationIntensity * 2));
+  const feImageHref = $derived(mode === "standard" ? displacementMap : polarDisplacementMap);
+  const feFuncATableValues = $derived(`0 ${aberrationIntensity * 0.05} 1`);
+  const redDisplacedScale = $derived(displacementScale * -1);
+  const greenDisplacedScale = $derived(displacementScale * (-1 - aberrationIntensity * 0.05));
+  const blueDisplacedScale = $derived(displacementScale * (-1 - aberrationIntensity * 0.1));
+  const gaussianBlurStdDeviation = $derived(Math.max(0.1, 0.5 - aberrationIntensity * 0.1));
 
-  // For Styling
-  $: svgStyle = `position: absolute; width: ${glassSize.width}px; height: ${glassSize.height}px;`;
-  $: warpFilterStyle = isFirefox ? null : `url(#${id})`; // 'id' is the filterId
-  $: warpBackdropFilterStyle = `blur(${(overLight ? 12 : 4) + blurAmount * 32}px) saturate(${saturation}%)`;
-  $: mainDivClass = `relative ${className} ${active ? "active" : ""} ${onClick ? "cursor-pointer" : ""}`;
-  $: glassDivStyle = `border-radius: ${cornerRadius}px; position: relative; display: inline-flex; align-items: center; gap: 24px; padding: ${padding}; overflow: hidden; transition: all 0.2s ease-in-out; box-shadow: ${overLight ? "0px 16px 70px rgba(0, 0, 0, 0.75)" : "0px 12px 40px rgba(0, 0, 0, 0.25)"};`;
-  $: childrenDivStyle = `position: relative; z-index: 1; font: 500 20px/1 system-ui; text-shadow: ${overLight ? "0px 2px 12px rgba(0, 0, 0, 0)" : "0px 2px 12px rgba(0, 0, 0, 0.4)"};`;
-  $: effectiveContainerStyle = Object.entries(containerStyle).map(([k, v]) => `${k}:${typeof v === 'number' ? v + 'px' : v}`).join(';');
+  const svgStyle = $derived(`position: absolute; width: ${glassSize.width}px; height: ${glassSize.height}px;`);
+  const warpFilterStyle = $derived(isFirefox ? '' : `url(#${id})`);
+  const warpBackdropFilterStyle = $derived(`blur(${(overLight ? 12 : 4) + blurAmount * 32}px) saturate(${saturation}%)`);
+  const mainDivClass = $derived(`relative ${className} ${active ? "active" : ""} ${onClick ? "cursor-pointer" : ""}`);
+  const glassDivStyle = $derived(`border-radius: ${cornerRadius}px; position: relative; display: inline-flex; align-items: center; gap: 24px; padding: ${padding}; overflow: hidden; transition: all 0.2s ease-in-out; box-shadow: ${overLight ? "0px 16px 70px rgba(0, 0, 0, 0.75)" : "0px 12px 40px rgba(0, 0, 0, 0.25)"};`);
+  const childrenDivStyle = $derived(`position: relative; z-index: 1; font: 500 20px/1 system-ui; text-shadow: ${overLight ? "0px 2px 12px rgba(0, 0, 0, 0)" : "0px 2px 12px rgba(0, 0, 0, 0.4)"};`);
+  const effectiveContainerStyle = $derived(Object.entries(containerStyle).map(([k, v]) => `${k}:${typeof v === 'number' ? v + 'px' : v}`).join(';'));
+
 </script>
 
 <!-- Outermost container div -->
@@ -133,10 +132,10 @@
   <div
     class="glass"
     style="{glassDivStyle}"
-    on:mouseenter={() => dispatch('mouseenter')}
-    on:mouseleave={() => dispatch('mouseleave')}
-    on:mousedown={() => dispatch('mousedown')}
-    on:mouseup={() => dispatch('mouseup')}
+    on:mouseenter={() => onGlassMouseEnter?.()}
+    on:mouseleave={() => onGlassMouseLeave?.()}
+    on:mousedown={() => onGlassMouseDown?.()}
+    on:mouseup={() => onGlassMouseUp?.()}
   >
     <!-- Backdrop layer -->
     <span

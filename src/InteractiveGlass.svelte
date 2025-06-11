@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import LiquidGlass from './LiquidGlass.svelte'; // The component modified in the previous step
+  // Svelte 5 Runes are auto-imported or global in .svelte files.
+  import LiquidGlass from './LiquidGlass.svelte'; // This is the already refactored child
 
   // --- Props ---
   export let displacementScale: number = 70;
@@ -15,29 +15,26 @@
   export let className: string = "";
   export let padding: string = "24px 32px";
   export let overLight: boolean = false;
-  export let style: Record<string, string | number> = {};
+  export let style: Record<string, string | number> = {}; // User-provided base style
   export let mode: "standard" | "polar" = "standard";
   export let onClick: (() => void) | null = null;
   export let id: string = "interactive-glass-filter-" + Math.random().toString(36).substr(2, 9);
 
-  // --- State ---
-  let glassRefElement: HTMLDivElement | null = null;
-  let isHovered = false;
-  let isActive = false;
-  let glassSize = { width: 270, height: 69 }; // Default, will be updated
-  let internalGlobalMousePos = { x: 0, y: 0 };
-  let internalMouseOffset = { x: 0, y: 0 };
+  // --- State ($state) ---
+  let glassRefElement = $state<HTMLDivElement | null>(null);
+  let isHovered = $state(false);
+  let isActive = $state(false);
+  let glassSize = $state({ width: 270, height: 69 });
+  let internalGlobalMousePos = $state({ x: 0, y: 0 });
+  let internalMouseOffset = $state({ x: 0, y: 0 });
 
-  // Derived state for mouse positions
-  $: globalMousePos = globalMousePosExternal || internalGlobalMousePos;
-  $: mouseOffset = mouseOffsetExternal || internalMouseOffset;
-
-  // --- Lifecycle and Event Handlers ---
+  // --- Helper Functions (modify $state variables) ---
   function updateGlassSize() {
     if (glassRefElement) {
       const rect = glassRefElement.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
-        glassSize = { width: rect.width, height: rect.height };
+        glassSize.width = rect.width;
+        glassSize.height = rect.height;
       }
     }
   }
@@ -50,55 +47,65 @@
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
 
-    internalMouseOffset = {
-      x: ((e.clientX - centerX) / rect.width) * 100,
-      y: ((e.clientY - centerY) / rect.height) * 100,
-    };
-    internalGlobalMousePos = { x: e.clientX, y: e.clientY };
+    internalMouseOffset.x = ((e.clientX - centerX) / rect.width) * 100;
+    internalMouseOffset.y = ((e.clientY - centerY) / rect.height) * 100;
+    internalGlobalMousePos.x = e.clientX;
+    internalGlobalMousePos.y = e.clientY;
   }
 
-  let currentMouseListenerTarget: HTMLElement | null = null;
-  function setupMouseListeners() {
-    if (currentMouseListenerTarget) {
-      currentMouseListenerTarget.removeEventListener('mousemove', handleMouseMove);
-      currentMouseListenerTarget = null;
-    }
-    if (!globalMousePosExternal && !mouseOffsetExternal) {
-      const newTarget = mouseContainer || glassRefElement;
-      if (newTarget) {
-        newTarget.addEventListener('mousemove', handleMouseMove);
-        currentMouseListenerTarget = newTarget;
-      }
-    }
-  }
+  // --- Lifecycle Effects ($effect) ---
 
-  onMount(() => {
-    updateGlassSize(); // Initial size
-    requestAnimationFrame(updateGlassSize); // Update after potential layout shifts
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+
+    updateGlassSize();
+    // Ensuring updateGlassSize is called after the DOM has potentially stabilized
+    const rafId = requestAnimationFrame(updateGlassSize);
+
     window.addEventListener("resize", updateGlassSize);
-    setupMouseListeners();
 
     return () => {
       window.removeEventListener("resize", updateGlassSize);
-      if (currentMouseListenerTarget) {
-        currentMouseListenerTarget.removeEventListener('mousemove', handleMouseMove);
+      cancelAnimationFrame(rafId);
+    };
+  });
+
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+
+    // Rerun this effect if mouseContainer or glassRefElement changes,
+    // or if external tracking status changes.
+    const currentTarget = mouseContainer || glassRefElement;
+    const useExternalTracking = globalMousePosExternal !== null || mouseOffsetExternal !== null;
+
+    let actualListenerTarget: HTMLElement | null = null;
+
+    if (!useExternalTracking && currentTarget) {
+      currentTarget.addEventListener('mousemove', handleMouseMove);
+      actualListenerTarget = currentTarget;
+    }
+
+    return () => {
+      if (actualListenerTarget) {
+        actualListenerTarget.removeEventListener('mousemove', handleMouseMove);
       }
     };
   });
 
-  // Reactive watch for mouseContainer or glassRefElement changes
-  $: if (typeof window !== 'undefined' && (mouseContainer || glassRefElement)) {
-      setupMouseListeners();
-  }
-
-  // Ensure glassSize is updated if glassRefElement becomes available/changes
-  $: if (glassRefElement && typeof window !== 'undefined') {
+  // This effect ensures that if glassRefElement itself is updated (e.g. by bind:this),
+  // we attempt to update the size.
+  $effect(() => {
+    if (typeof window !== 'undefined' && glassRefElement) {
       updateGlassSize();
-      // Consider ResizeObserver for dynamic content changes within glassRefElement
-      // For now, relying on initial + resize.
-  }
+    }
+  });
 
-  // --- Calculation Functions ---
+  // --- Derived State ($derived) ---
+  const globalMousePos = $derived(globalMousePosExternal || internalGlobalMousePos);
+  const mouseOffset = $derived(mouseOffsetExternal || internalMouseOffset);
+
+  // --- Calculation Functions (called by $derived signals) ---
+  // These functions now read $state and props directly, and $derived signals will update if those change.
   function calculateFadeInFactor(): number {
     if (!globalMousePos.x || !globalMousePos.y || !glassRefElement) return 0;
     const rect = glassRefElement.getBoundingClientRect();
@@ -144,28 +151,30 @@
     const normalizedX = deltaX / centerDistance;
     const normalizedY = deltaY / centerDistance;
     const stretchIntensity = Math.min(centerDistance / 300, 1) * elasticity * fadeInFactor;
-    const scaleX = 1 + Math.abs(normalizedX) * stretchIntensity * 0.3 - Math.abs(normalizedY) * stretchIntensity * 0.15;
-    const scaleY = 1 + Math.abs(normalizedY) * stretchIntensity * 0.3 - Math.abs(normalizedX) * stretchIntensity * 0.15;
+    const scaleX_val = 1 + Math.abs(normalizedX) * stretchIntensity * 0.3 - Math.abs(normalizedY) * stretchIntensity * 0.15;
+    const scaleY_val = 1 + Math.abs(normalizedY) * stretchIntensity * 0.3 - Math.abs(normalizedX) * stretchIntensity * 0.15;
 
-    return `scaleX(${Math.max(0.8, scaleX)}) scaleY(${Math.max(0.8, scaleY)})`;
+    return `scaleX(${Math.max(0.8, scaleX_val)}) scaleY(${Math.max(0.8, scaleY_val)})`;
   }
 
-  // --- Reactive Styles ---
-  $: elasticTranslation = calculateElasticTranslation();
-  $: directionalScale = calculateDirectionalScale();
-  $: transformStyleValue = `translate(calc(-50% + ${elasticTranslation.x}px), calc(-50% + ${elasticTranslation.y}px)) ${isActive && onClick ? "scale(0.96)" : directionalScale}`;
+  // --- Reactive Styles ($derived) ---
+  const elasticTranslation = $derived(calculateElasticTranslation());
+  const directionalScale = $derived(calculateDirectionalScale());
 
-  $: baseStyleObject = {
+  const transformStyleValue = $derived(
+    `translate(calc(-50% + ${elasticTranslation.x}px), calc(-50% + ${elasticTranslation.y}px)) ${isActive && onClick ? "scale(0.96)" : directionalScale}`
+  );
+
+  const baseStyleObject = $derived({
     ...style,
     transform: transformStyleValue,
     transition: "all ease-out 0.2s",
-    // Ensure position is set for transform to work as expected with top/left 50%
     position: style.position || "relative",
     top: style.top || "50%",
     left: style.left || "50%",
-  };
+  });
 
-  $: positionStyles = {
+  const positionStyles = $derived({
     position: baseStyleObject.position,
     top: baseStyleObject.top,
     left: baseStyleObject.left,
@@ -174,23 +183,29 @@
     borderRadius: `${cornerRadius}px`,
     transform: transformStyleValue,
     transition: baseStyleObject.transition,
-  };
+  });
 
-  $: positionStyleString = `position: ${positionStyles.position}; top: ${positionStyles.top}; left: ${positionStyles.left}; height: ${positionStyles.height}; width: ${positionStyles.width}; border-radius: ${positionStyles.borderRadius}; transform: ${positionStyles.transform}; transition: ${positionStyles.transition};`;
+  const positionStyleString = $derived(
+    `position: ${positionStyles.position}; top: ${positionStyles.top}; left: ${positionStyles.left}; height: ${positionStyles.height}; width: ${positionStyles.width}; border-radius: ${positionStyles.borderRadius}; transform: ${positionStyles.transform}; transition: ${positionStyles.transition};`
+  );
 
-  // Border gradients
-  $: borderBg1 = `linear-gradient(${135 + mouseOffset.x * 1.2}deg, rgba(255,255,255,0) 0%, rgba(255,255,255,${0.12 + Math.abs(mouseOffset.x)*0.008}) ${Math.max(10,33+mouseOffset.y*0.3)}%, rgba(255,255,255,${0.4 + Math.abs(mouseOffset.x)*0.012}) ${Math.min(90,66+mouseOffset.y*0.4)}%, rgba(255,255,255,0) 100%)`;
-  $: borderBg2 = `linear-gradient(${135 + mouseOffset.x * 0.5}deg, rgba(255,255,255,0) 0%, rgba(255,255,255,${0.05 + Math.abs(mouseOffset.x)*0.002}) ${Math.max(25,40+mouseOffset.y*0.2)}%, rgba(255,255,255,${0.1 + Math.abs(mouseOffset.x)*0.003}) ${Math.min(75,60+mouseOffset.y*0.2)}%, rgba(255,255,255,0) 100%)`;
-  $: borderBg3 = `linear-gradient(${135 + mouseOffset.x * 0.2}deg, rgba(0,0,0,0) 0%, rgba(0,0,0,${0.1 + Math.abs(mouseOffset.x)*0.005}) ${Math.max(35,45+mouseOffset.y*0.1)}%, rgba(0,0,0,${0.2 + Math.abs(mouseOffset.x)*0.008}) ${Math.min(65,55+mouseOffset.y*0.1)}%, rgba(0,0,0,0) 100%)`;
+  const borderBg1 = $derived(
+    `linear-gradient(${135 + mouseOffset.x * 1.2}deg, rgba(255,255,255,0) 0%, rgba(255,255,255,${0.12 + Math.abs(mouseOffset.x)*0.008}) ${Math.max(10,33+mouseOffset.y*0.3)}%, rgba(255,255,255,${0.4 + Math.abs(mouseOffset.x)*0.012}) ${Math.min(90,66+mouseOffset.y*0.4)}%, rgba(255,255,255,0) 100%)`
+  );
+  const borderBg2 = $derived(
+    `linear-gradient(${135 + mouseOffset.x * 0.5}deg, rgba(255,255,255,0) 0%, rgba(255,255,255,${0.05 + Math.abs(mouseOffset.x)*0.002}) ${Math.max(25,40+mouseOffset.y*0.2)}%, rgba(255,255,255,${0.1 + Math.abs(mouseOffset.x)*0.003}) ${Math.min(75,60+mouseOffset.y*0.2)}%, rgba(255,255,255,0) 100%)`
+  );
+   const borderBg3 = $derived(
+    `linear-gradient(${135 + mouseOffset.x * 0.2}deg, rgba(0,0,0,0) 0%, rgba(0,0,0,${0.1 + Math.abs(mouseOffset.x)*0.005}) ${Math.max(35,45+mouseOffset.y*0.1)}%, rgba(0,0,0,${0.2 + Math.abs(mouseOffset.x)*0.008}) ${Math.min(65,55+mouseOffset.y*0.1)}%, rgba(0,0,0,0) 100%)`
+  );
 
-  // Hover effect opacities
-  $: hoverEffectOpacity1 = isHovered || isActive ? 0.5 : 0;
-  $: hoverEffectOpacity2 = isActive ? 0.5 : 0;
-  $: hoverEffectOpacity3 = isHovered ? 0.4 : isActive ? 0.8 : 0;
+  const hoverEffectOpacity1 = $derived(isHovered || isActive ? 0.5 : 0);
+  const hoverEffectOpacity2 = $derived(isActive ? 0.5 : 0);
+  const hoverEffectOpacity3 = $derived(isHovered ? 0.4 : isActive ? 0.8 : 0);
 
 </script>
 
-<div style="position: relative; display: inline-block;"> <!-- Wrapper to contain all absolutely positioned elements -->
+<div style="position: relative; display: inline-block;">
   <LiquidGlass
     bind:element={glassRefElement}
     id={id}
@@ -207,15 +222,14 @@
     overLight={overLight}
     mode={mode}
     onClick={onClick}
-    on:mouseenter={() => isHovered = true}
-    on:mouseleave={() => { isHovered = false; isActive = false; /* Reset active on leave */ }}
-    on:mousedown={() => { if(onClick) isActive = true; }}
-    on:mouseup={() => { if(onClick) isActive = false; }}
+    onGlassMouseEnter={() => isHovered = true}
+    onGlassMouseLeave={() => { isHovered = false; isActive = false; }}
+    onGlassMouseDown={() => { if(onClick) isActive = true; }}
+    onGlassMouseUp={() => { if(onClick) isActive = false; }}
   >
     <slot></slot>
   </LiquidGlass>
 
-  <!-- Decorative Elements -->
   {#if overLight}
     <div
       class="pointer-events-none"
@@ -250,7 +264,6 @@
     ></span>
   {/if}
 
-  <!-- Hover Effects -->
   <div
     class="pointer-events-none"
     style="{positionStyleString} background: radial-gradient(circle at {50 + mouseOffset.x * 0.2}% {50 + mouseOffset.y * 0.3}%, rgba(200,200,255,{hoverEffectOpacity1 * (overLight ? 0.1 : 0.3)}) 0%, rgba(200,200,255,0) 60%); opacity: {hoverEffectOpacity1}; mix-blend-mode: {overLight ? 'soft-light': 'screen'}; transition: {positionStyles.transition}, opacity 0.3s ease-in-out;"
@@ -267,16 +280,7 @@
 </div>
 
 <style>
-  /* Minimal global styles, most are inline due to dynamic nature */
   .pointer-events-none {
     pointer-events: none;
-  }
-  /* Ensure the parent div of LiquidGlass can contain absolutely positioned children if LiquidGlass itself is not taking up space or is inline */
-  div[style*="position: relative; display: inline-block;"] {
-    /* This style targets the wrapper div based on its inline style attributes.
-       It's a bit fragile but works for this structure. A dedicated class would be better. */
-    /* display: inline-block; /* Already set */
-    /* position: relative; /* Already set */
-    /* Add any other necessary wrapper styles if needed */
   }
 </style>
